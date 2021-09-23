@@ -7,7 +7,7 @@ package main
 import (
 	"fmt"
 	"math"
-	"math/cmplx"
+	//"math/cmplx"
 	"math/rand"
 
 	"gonum.org/v1/plot"
@@ -15,7 +15,8 @@ import (
 	"gonum.org/v1/plot/vg"
 	"gonum.org/v1/plot/vg/draw"
 
-	"github.com/pointlander/gradient/tc128"
+	//"github.com/pointlander/gradient/tc128"
+	"github.com/pointlander/gradient/tf32"
 )
 
 const (
@@ -24,7 +25,7 @@ const (
 )
 
 // https://www.geeksforgeeks.org/determinant-of-a-matrix/
-func cofactor(mat, temp []complex128, p, q, n int) {
+func cofactor(mat, temp []float32, p, q, n int) {
 	i, j := 0, 0
 	for row := 0; row < n; row++ {
 		for col := 0; col < n; col++ {
@@ -40,13 +41,13 @@ func cofactor(mat, temp []complex128, p, q, n int) {
 	}
 }
 
-func determinant(mat []complex128, n int) complex128 {
+func determinant(mat []float32, n int) float32 {
 	if n == 1 {
 		return mat[0]
 	}
-	var d complex128
-	temp := make([]complex128, Size*Size)
-	sign := complex128(1)
+	var d float32
+	temp := make([]float32, Size*Size)
+	sign := float32(1)
 	for f := 0; f < n; f++ {
 		cofactor(mat, temp, 0, f, n)
 		d += sign * mat[f] * determinant(temp, n-1)
@@ -56,19 +57,19 @@ func determinant(mat []complex128, n int) complex128 {
 }
 
 func main() {
-	input := tc128.NewSet()
+	input := tf32.NewSet()
 	input.Add("a", Size, Size)
 
-	set := tc128.NewSet()
-	set.Add("l", Size, Size)
-	set.Add("u", Size, Size)
+	set := tf32.NewSet()
+	set.Add("vectors", Size, Size)
+	set.Add("values", Size, Size)
 
-	random128 := func(a, b float64) complex128 {
+	random128 := func(a, b float32) float32 {
 		//return complex((b-a)*rand.Float64()+a, (b-a)*rand.Float64()+a)
-		return complex(rand.NormFloat64(), rand.NormFloat64())
+		return float32(rand.NormFloat64())
 	}
 
-	for i := range input.Weights[:1] {
+	for i := range input.Weights {
 		w := input.Weights[i]
 		if w.S[1] == 1 {
 			for i := 0; i < cap(w.X); i++ {
@@ -81,13 +82,15 @@ func main() {
 		}
 	}
 
-	set.Weights[0].X = set.Weights[0].X[:cap(set.Weights[0].X)]
-	for i := 0; i < Size; i++ {
-		for j := 0; j < Size; j++ {
-			if j == i {
-				set.Weights[0].X[i*Size+j] = 1
-			} else if j < i {
-				set.Weights[0].X[i*Size+j] = random128(-1, 1)
+	for i := range set.Weights[:1] {
+		w := set.Weights[i]
+		if w.S[1] == 1 {
+			for i := 0; i < cap(w.X); i++ {
+				w.X = append(w.X, random128(-1, 1))
+			}
+		} else {
+			for i := 0; i < cap(w.X); i++ {
+				w.X = append(w.X, random128(-1, 1))
 			}
 		}
 	}
@@ -95,61 +98,74 @@ func main() {
 	set.Weights[1].X = set.Weights[1].X[:cap(set.Weights[1].X)]
 	for i := 0; i < Size; i++ {
 		for j := 0; j < Size; j++ {
-			if j >= i {
-				set.Weights[1].X[i*Size+j] = random128(-1, 1)
+			if j == i {
+				set.Weights[1].X[i*Size+j] = 1
 			}
 		}
 	}
 
-	l1 := tc128.Mul(set.Get("l"), tc128.T(set.Get("u")))
-	l2 := tc128.Sub(input.Get("a"), l1)
-	cost := tc128.Avg(tc128.Hadamard(l2, l2))
+	l1 := tf32.Mul(input.Get("a"), set.Get("vectors"))
+	l2 := tf32.Mul(tf32.T(set.Get("vectors")), set.Get("values"))
+	l3 := tf32.Sub(l1, l2)
+	cost := tf32.Avg(tf32.Hadamard(l3, l3))
 
-	eta, iterations := complex128(.1+.1i), 256*1024
+	eta, iterations := float32(1), 256*1024
 	points := make(plotter.XYs, 0, iterations)
 	i := 0
 	for i < iterations {
-		total := complex128(0)
+		total := float32(0.0)
 		set.Zero()
 
-		total += tc128.Gradient(cost).X[0]
-		sum := 0.0
+		total += tf32.Gradient(cost).X[0]
+		sum := float32(0.0)
 		for _, p := range set.Weights {
 			for _, d := range p.D {
-				sum += cmplx.Abs(d) * cmplx.Abs(d)
+				sum += d * d
 			}
 		}
-		norm := float64(math.Sqrt(float64(sum)))
-		scaling := float64(1)
+		norm := float32(math.Sqrt(float64(sum)))
+		scaling := float32(1)
 		if norm > 1 {
 			scaling = 1 / norm
 		}
 
 		for i := 0; i < Size; i++ {
 			for j := 0; j < Size; j++ {
-				if j < i {
-					set.Weights[0].X[i*Size+j] -= eta * set.Weights[0].D[i*Size+j] * complex(scaling, 0)
+				set.Weights[0].X[i*Size+j] -= eta * set.Weights[0].D[i*Size+j] * scaling
+			}
+		}
+
+		l := 0
+		for k := 0; k < Size; k++ {
+			for j := 0; j < Size; j++ {
+				if j == k && i/1000 <= l {
+					set.Weights[1].X[k*Size+j] -= eta * set.Weights[1].D[k*Size+j] * scaling
+				}
+				if j == k {
+					l++
 				}
 			}
 		}
 
+		points = append(points, plotter.XY{X: float64(i), Y: math.Log10(float64(total))})
+
+		d := float32(1.0)
 		for i := 0; i < Size; i++ {
 			for j := 0; j < Size; j++ {
-				if j >= i {
-					set.Weights[1].X[i*Size+j] -= eta * set.Weights[1].D[i*Size+j] * complex(scaling, 0)
+				if i == j {
+					d *= set.Weights[1].X[i*Size+j]
 				}
 			}
 		}
 
-		points = append(points, plotter.XY{X: float64(i), Y: math.Log10(cmplx.Abs(total))})
-		fmt.Println(i, cmplx.Abs(total))
+		fmt.Println(i, total, d)
 		i++
-		if cmplx.Abs(total) < 1 {
+		if total < 5e-12 {
 			break
 		}
 	}
 
-	d := complex128(1.0)
+	d := float32(1.0)
 	for i := 0; i < Size; i++ {
 		for j := 0; j < Size; j++ {
 			if i == j {
@@ -157,7 +173,7 @@ func main() {
 			}
 		}
 	}
-	fmt.Println(d, "=", determinant(set.Weights[1].X, Size))
+	fmt.Println(d, "=", determinant(input.Weights[0].X, Size))
 
 	p := plot.New()
 
@@ -180,15 +196,18 @@ func main() {
 
 	for i := 0; i < Size; i++ {
 		for j := 0; j < Size; j++ {
-			fmt.Printf("%v ", cmplx.Abs(set.Weights[0].X[i*Size+j]))
+			fmt.Printf("%v ", set.Weights[1].X[i*Size+j])
 		}
 		fmt.Println("")
 	}
 	fmt.Println("")
-	for i := 0; i < Size; i++ {
-		for j := 0; j < Size; j++ {
-			fmt.Printf("%v ", cmplx.Abs(set.Weights[1].X[i*Size+j]))
+	l3(func(a *tf32.V) bool {
+		for i := 0; i < Size; i++ {
+			for j := 0; j < Size; j++ {
+				fmt.Printf("%v ", a.X[i*Size+j])
+			}
+			fmt.Println("")
 		}
-		fmt.Println("")
-	}
+		return true
+	})
 }
